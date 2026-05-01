@@ -1,13 +1,63 @@
 import pandas as pd
 import numpy as np
 import os
+import matplotlib.pyplot as plt
+import seaborn as sns
 from openpyxl import load_workbook
 from openpyxl.drawing.image import Image
+
+# 한글 폰트 설정 (macOS용 AppleGothic)
+plt.rcParams['font.family'] = 'AppleGothic'
+plt.rcParams['axes.unicode_minus'] = False
+
+def save_visualizations(df, output_dir):
+    """각 컬럼별로 개별 시각화 차트 생성 및 저장"""
+    sns.set_theme(style="whitegrid", font='AppleGothic')
+    viz_files = []
+
+    # 1. 범주형 데이터 개별 시각화 (상위 10개 카테고리 빈도수)
+    # product_category_name 등 주요 범주형 컬럼 대상
+    cat_cols = df.select_dtypes(include=['object']).columns
+    for col in cat_cols:
+        if col == 'product_id': continue # ID는 시각화 제외
+        
+        plt.figure(figsize=(10, 6))
+        counts = df[col].value_counts().head(15)
+        sns.barplot(x=counts.values, y=counts.index, hue=counts.index, palette='husl', legend=False)
+        plt.title(f'[{col}] 빈도수 분포 (Top 15)', fontsize=14)
+        plt.xlabel('개수')
+        plt.ylabel('항목')
+        plt.tight_layout()
+        
+        file_path = os.path.join(output_dir, f'viz_cat_{col}.png')
+        plt.savefig(file_path, dpi=200)
+        plt.close()
+        viz_files.append(('categorical', col, file_path))
+        print(f"📊 범주형 차트 생성: {file_path}")
+
+    # 2. 수치형 데이터 개별 시각화 (데이터 분포/히스토그램 형태의 바 차트)
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    for col in num_cols:
+        plt.figure(figsize=(10, 6))
+        # 수치형 데이터는 구간(bin)을 나누어 빈도 시각화
+        sns.histplot(df[col], kde=True, color='skyblue', bins=30)
+        plt.title(f'[{col}] 데이터 분포', fontsize=14)
+        plt.xlabel('값')
+        plt.ylabel('빈도')
+        plt.tight_layout()
+        
+        file_path = os.path.join(output_dir, f'viz_num_{col}.png')
+        plt.savefig(file_path, dpi=200)
+        plt.close()
+        viz_files.append(('numerical', col, file_path))
+        print(f"📊 수치형 차트 생성: {file_path}")
+    
+    return viz_files
 
 def run_analysis_to_excel():
     # 경로 설정
     file_path = 'data/products_dataset.csv'
-    img_path = 'images/image_668a63.png'  # 업로드하신 통계 표 이미지
+    img_path = 'images/image_668a63.png'
     output_dir = 'output'
     excel_path = f'{output_dir}/product_analysis_report.xlsx'
 
@@ -19,15 +69,13 @@ def run_analysis_to_excel():
         df = pd.read_csv(file_path)
         print("✅ 데이터를 성공적으로 불러왔습니다.")
 
-        # 2. 수치형 데이터 통계 (이미지의 모든 항목: count, mean, std, min, 25%, 50%, 75%, max)
-        # .describe().T를 사용하면 이미지와 동일한 구성의 통계표가 생성됩니다.
+        # 개별 시각화 실행
+        viz_list = save_visualizations(df, output_dir)
+
+        # 2. 통계 데이터 생성
         stats = df.describe().T
         stats = stats[['count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max']]
-
-        # 3. 카테고리 별 수치형 데이터 평균 추출
         category_avg = df.groupby('product_category_name').mean(numeric_only=True)
-
-        # 4. 데이터 정보 (컬럼명, 타입, Null 여부)
         info_df = pd.DataFrame({
             '컬럼명': df.columns,
             '데이터 타입': df.dtypes.values,
@@ -35,32 +83,37 @@ def run_analysis_to_excel():
             'Null 존재 여부': df.isnull().any().values
         })
 
-        # 5. 엑셀 파일 생성 및 시트별 저장
+        # 3. 엑셀 파일 저장
         with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
             info_df.to_excel(writer, sheet_name='1.데이터_정보', index=False)
             stats.to_excel(writer, sheet_name='2.수치형_통계_상세')
             category_avg.to_excel(writer, sheet_name='3.카테고리별_평균')
             df.head(100).to_excel(writer, sheet_name='4.데이터_샘플(100개)', index=False)
 
-        # 6. 엑셀에 이미지 삽입 (요구사항)
-        if os.path.exists(img_path):
-            wb = load_workbook(excel_path)
-            ws = wb['2.수치형_통계_상세']
-
-            # 이미지 객체 생성 및 크기 조정
-            img = Image(img_path)
-            img.width = 450  # 엑셀 내 이미지 너비 조절
-            img.height = 300 # 엑셀 내 이미지 높이 조절
-
-            # 통계표 옆(J2 셀)에 이미지 붙이기
-            ws.add_image(img, 'J2')
-            wb.save(excel_path)
-            print("📸 엑셀 시트에 통계 이미지가 삽입되었습니다.")
-
-        print(f"🎉 모든 요구사항이 반영된 엑셀 보고서가 생성되었습니다: {excel_path}")
+        # 4. 엑셀에 개별 차트 삽입
+        wb = load_workbook(excel_path)
+        ws_viz = wb.create_sheet('5.시각화_상세분석')
+        
+        current_row = 2
+        for v_type, col_name, f_path in viz_list:
+            # 설명 텍스트 추가
+            ws_viz.cell(row=current_row, column=2, value=f"📊 {col_name} 분석 차트 ({v_type})")
+            
+            # 이미지 삽입
+            img = Image(f_path)
+            img.width = 500
+            img.height = 300
+            ws_viz.add_image(img, f'B{current_row + 1}')
+            
+            # 다음 이미지를 위한 행 간격 띄우기
+            current_row += 18 
+        
+        wb.save(excel_path)
+        print(f"📸 모든 개별 차트({len(viz_list)}개)가 엑셀에 삽입되었습니다.")
+        print(f"🎉 리포트 생성이 완료되었습니다: {excel_path}")
 
     except FileNotFoundError:
-        print(f"❌ 에러: 파일을 찾을 수 없습니다. 경로를 확인하세요.")
+        print(f"❌ 에러: 파일을 찾을 수 없습니다.")
     except Exception as e:
         print(f"❌ 에러 발생: {e}")
 
